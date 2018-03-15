@@ -4,6 +4,30 @@ function results = tracker(params)
 %% Initialization
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+%======VOT======
+% Get sequence info
+[seq, im] = get_sequence_info(params.seq);
+
+params = rmfield(params, 'seq');
+if isempty(im)
+    seq.rect_position = [];
+    [seq, results] = get_sequence_results(seq);
+    return;
+end
+
+% Init position
+% pos = seq.init_pos(:)';
+% target_sz = seq.init_sz(:)';
+% params.init_sz = target_sz;
+
+% params.wsize = [seq.init_rect(1,4), seq.init_rect(1,3)];
+% params.init_pos = [seq.init_rect(1,2), seq.init_rect(1,1)] + floor(params.wsize/2);
+params.wsize = seq.init_sz(:);
+params.init_pos = seq.init_pos(:);
+
+
+
+
 %parameters
 search_area_scale = params.search_area_scale;
 output_sigma_factor = params.output_sigma_factor;
@@ -35,24 +59,24 @@ if ~isfield(params, 'clamp_position')
     params.clamp_position = false;
 end
 
-s_frames = params.s_frames;
+% s_frames = params.s_frames;
 pos = floor(params.init_pos(:)');
 target_sz = floor(params.wsize(:)');
 
 debug = params.debug;
 visualization = params.visualization || debug;
 
-num_frames = numel(s_frames);
+% num_frames = numel(s_frames);
 
-params.nSamples = min(params.nSamples, num_frames);
+params.nSamples = min(params.nSamples, 100);
 
 %notation: variables ending with f are in the frequency domain.
 
 init_target_sz = target_sz;
 
 % Calculate feature dimension
-im = imread(s_frames{1});
-if size(im,3) == 3
+% im = imread(s_frames{1});
+if size(im,3) == 3  % RGB
     if all(all(im(:,:,1) == im(:,:,2)))
         is_color_image = false;
     else
@@ -68,7 +92,7 @@ end
 
 % use the maximum feature ratio right now todetermin the search size
 
-search_area = prod(init_target_sz * search_area_scale);
+search_area = prod(init_target_sz * search_area_scale);  % 50*5 * 17*5 = 21250
 
 if search_area > max_image_sample_size
     currentScaleFactor = sqrt(search_area / max_image_sample_size);
@@ -99,7 +123,7 @@ end
 img_sample_sz = feature_info.img_sample_sz;
 img_support_sz = feature_info.img_support_sz;
 feature_sz = feature_info.data_sz;
-feature_dim = feature_info.dim;
+feature_dim = feature_info.dim;  % num of maps each feature block(a block of feature maps have same resolution) has
 num_feature_blocks = length(feature_dim);
 feature_reg = permute(num2cell(feature_info.penalty), [2 3 1]);
 
@@ -147,7 +171,7 @@ for k = 1:length(features)
     if isfield(features{k}.fparams, 'reg_window_edge')
         reg_window_edge = cat(3, reg_window_edge, permute(num2cell(features{k}.fparams.reg_window_edge(:)), [2 3 1]));
     else
-        reg_window_edge = cat(3, reg_window_edge, cell(1, 1, length(features{k}.fparams.nDim)));
+        reg_window_edge = cat(3, reg_window_edge, cell(1, 1, length(features{k}.fparams.nDim)));  % nDim:3 96 512
     end
 end
 
@@ -168,7 +192,7 @@ if nScales > 0
 end
 
 % initialize the projection matrix
-rect_position = zeros(num_frames, 4);
+% rect_position = zeros(num_frames, 4);
 
 time = 0;
 
@@ -181,30 +205,52 @@ for k = 1:num_feature_blocks
     samplesf{k} = complex(zeros(params.nSamples,feature_dim(k),filter_sz(k,1),(filter_sz(k,2)+1)/2,'single'));
 end
 
-residuals_pcg = [];
+% residuals_pcg = [];
 
-for frame = 1:num_frames,
-    %load image
-    im = imread(s_frames{frame});
-    if size(im,3) > 1 && is_color_image == false
-        im = im(:,:,1);
+while true
+    % ====== VOT ======
+    % Read image
+    if seq.frame > 0
+        [seq, im] = get_sequence_frame(seq);
+        if isempty(im)
+            break;
+        end
+        if size(im,3) > 1 && is_color_image == false
+            im = im(:,:,1);
+        end
+    else
+        seq.frame = 1;
     end
+
+    
+    
+    
+    
+    
+    
+    
+%     %load image
+%     im = imread(s_frames{frame});
+%     if size(im,3) > 1 && is_color_image == false
+%         im = im(:,:,1);
+%     end
+    
 
     tic();
     
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     %% Target localization step
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-    
+  
     % Do not estimate translation and scaling on the first frame, since we 
     % just want to initialize the tracker there
-    if frame > 1
+    if seq.frame > 1
         old_pos = inf(size(pos));
         iter = 1;
-        
+      
         %translation search
         while iter <= refinement_iterations && any(old_pos ~= pos)
-            % Extract features at multiple resolutions
+            % Extract features at multiple resolutions from CNN
             xt = extract_features(im, pos, currentScaleFactor*scaleFactors, features, global_fparams);
             
             % Do windowing of features
@@ -249,7 +295,7 @@ for frame = 1:num_frames,
             
             iter = iter + 1;
         end
-        
+
         % debug visualization
 %         if debug
 %             figure(101);
@@ -266,15 +312,15 @@ for frame = 1:num_frames,
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     %% Model update step
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-    
+ 
     % Update the weights
-    [prior_weights, replace_ind] = update_prior_weights(prior_weights, sample_weights, latest_ind, frame, params);
+    [prior_weights, replace_ind] = update_prior_weights(prior_weights, sample_weights, latest_ind, seq.frame, params);
     latest_ind = replace_ind;
     sample_weights = prior_weights;
-    
+ 
     % Extract image region for training sample
     xl = extract_features(im, pos, currentScaleFactor, features, global_fparams);
-    
+  
     % Do windowing of features
     xl = cellfun(@(feat_map, cos_window) bsxfun(@times, feat_map, cos_window), xl, cos_window, 'uniformoutput', false);
     
@@ -284,21 +330,21 @@ for frame = 1:num_frames,
     % Interpolate features to the continuous domain
     xlf = interpolate_dft(xlf, interp1_fs, interp2_fs);
     
-    % New sample to be added
+    % New sample to be added         xlf = xlf(:,1:27,:),it just take a half?
     xlf = cellfun(@(xf) xf(:,1:(size(xf,2)+1)/2,:), xlf, 'uniformoutput', false);
     
     % Insert the new training sample
     for k = 1:num_feature_blocks
-        samplesf{k}(replace_ind,:,:,:) = permute(xlf{k}, [4 3 1 2]);
+        samplesf{k}(replace_ind,:,:,:) = permute(xlf{k}, [4 3 1 2]); % num*dim*h*w
     end
     
-    % Construct the right hand side vector
+    % Construct the right hand side vector             w*h*dim*num               
     rhs_samplef = cellfun(@(xf) permute(mtimesx(sample_weights, 'T', xf, 'speed'), [3 4 2 1]), samplesf, 'uniformoutput', false);
     rhs_samplef = cellfun(@(xf, yf) bsxfun(@times, conj(xf), yf), rhs_samplef, yf, 'uniformoutput', false);
     
     new_sample_energy = cellfun(@(xlf) abs(xlf .* conj(xlf)), xlf, 'uniformoutput', false);
-    
-    if frame == 1
+   
+    if seq.frame == 1
         % Initialize the filter
         hf = cell(1,1,num_feature_blocks);
         for k = 1:num_feature_blocks
@@ -340,117 +386,133 @@ for frame = 1:num_frames,
     hf = symmetrize_filter(hf);
 
     % Reconstruct the full Fourier series
+    % two 53*27*3->53*53*3,????????,then catanate
     hf_full = full_fourier_coeff(hf);
     
     % Update the target size (only used for computing output box)
     target_sz = floor(base_target_sz * currentScaleFactor);
+  
+    
+    % ====== VOTtoolkit ======
+    tracking_result.center_pos = double(pos);
+    tracking_result.target_size = double(target_sz);
+    seq = report_tracking_result(seq, tracking_result);
+    
+    
+    
+    
+    
+    
+    
     
     %save position and calculate FPS
-    rect_position(frame,:) = [pos([2,1]) - floor(target_sz([2,1])/2), target_sz([2,1])];
+%     rect_position(frame,:) = [pos([2,1]) - floor(target_sz([2,1])/2), target_sz([2,1])];
     
     time = time + toc();
-    
+
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     %% Visualization
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     
     % debug visualization
-    if debug
-        figure(20)
-%         set(gcf,'units','normalized','outerposition',[0 0 1 1]);
-        subplot_cols = num_feature_blocks;
-        subplot_rows = 3;%ceil(feature_dim/subplot_cols);
-        for disp_layer = 1:num_feature_blocks;
-            subplot(subplot_rows,subplot_cols,disp_layer);
-            imagesc(prod(filter_sz(disp_layer,:)) * mean(abs(ifft2(conj(ifftshift(hf_full{disp_layer})), 'symmetric')), 3)); 
-            colorbar;
-            axis image;
-            subplot(subplot_rows,subplot_cols,disp_layer+subplot_cols);
-            imagesc(mean(abs(xl{disp_layer}), 3)./(cos_window{disp_layer}+eps)); 
-            colorbar;
-            axis image;
-            if frame > 1
-                subplot(subplot_rows,subplot_cols,disp_layer+2*subplot_cols);
-                imagesc(prod(output_sz) * fftshift(ifft2(ifftshift(scores_fs_feat{disp_layer}(:,:,1,scale_ind)), 'symmetric')));
-                colorbar;
-                axis image;
-            end
-        end
-        
-%         figure(102);plot(sample_weights);title('Sample weights');
-        
-        residuals_pcg = [residuals_pcg; res_norms/norm_cdcf(rhs_samplef)];
-        res_start_ind = max(1, length(residuals_pcg)-40*max_CG_iter);
-        figure(99);plot(res_start_ind:length(residuals_pcg), residuals_pcg(res_start_ind:end));
-        axis([res_start_ind, length(residuals_pcg), 0, min(max(residuals_pcg(res_start_ind:end)), 0.2)]);
-    end
-    
-    %visualization
-    if visualization == 1
-        rect_position_vis = [pos([2,1]) - target_sz([2,1])/2, target_sz([2,1])];
-        im_to_show = double(im)/255;
-        if size(im_to_show,3) == 1
-            im_to_show = repmat(im_to_show, [1 1 3]);
-        end
-        if frame == 1,  %first frame, create GUI
-            fig_handle = figure('Name', 'Tracking');
-%             set(fig_handle, 'Position', [100, 100, size(im,2), size(im,1)]);
-            imagesc(im_to_show);
-            hold on;
-            rectangle('Position',rect_position_vis, 'EdgeColor','g', 'LineWidth',2);
-            text(10, 10, int2str(frame), 'color', [0 1 1]);
-            hold off;
-            axis off;axis image;set(gca, 'Units', 'normalized', 'Position', [0 0 1 1])
-            
-%             output_name = 'Regularized';
-%             opengl software;
-%             writer = VideoWriter(output_name, 'MPEG-4');
-%             writer.FrameRate = 5;
-%             open(writer);
-        else
-            % Do visualization of the sampled confidence scores overlayed
-            resp_sz = round(img_support_sz*currentScaleFactor*scaleFactors(scale_ind));
-            xs = floor(old_pos(2)) + (1:resp_sz(2)) - floor(resp_sz(2)/2);
-            ys = floor(old_pos(1)) + (1:resp_sz(1)) - floor(resp_sz(1)/2);
-            
-            % To visualize the continuous scores, sample them 10 times more
-            % dense than output_sz. This is implemented an an ifft2.
-            % First pad the fourier series with zeros.
-            sampled_scores_display_dft = resizeDFT2(scores_fs(:,:,scale_ind), 10*output_sz, false);
-            % Then do inverse DFT and rescale correctly
-            sampled_scores_display = fftshift(prod(10*output_sz) * ifft2(sampled_scores_display_dft, 'symmetric'));
-            
-            figure(fig_handle);
-%                 set(fig_handle, 'Position', [100, 100, 100+size(im,2), 100+size(im,1)]);
-            imagesc(im_to_show);
-            hold on;
-            resp_handle = imagesc(xs, ys, sampled_scores_display); colormap hsv;
-            alpha(resp_handle, 0.5);
-            rectangle('Position',rect_position_vis, 'EdgeColor','g', 'LineWidth',2);
-            text(10, 10, int2str(frame), 'color', [0 1 1]);
-            hold off;
-            
-%                 axis off;axis image;set(gca, 'Units', 'normalized', 'Position', [0 0 1 1])
-        end
-        
-        drawnow
-%         if frame > 1
-%             if frame < inf
-%                 writeVideo(writer, getframe(gcf));
-%             else
-%                 close(writer);
+%     if debug
+%         figure(20)
+% %         set(gcf,'units','normalized','outerposition',[0 0 1 1]);
+%         subplot_cols = num_feature_blocks;
+%         subplot_rows = 3;%ceil(feature_dim/subplot_cols);
+%         for disp_layer = 1:num_feature_blocks;
+%             subplot(subplot_rows,subplot_cols,disp_layer);
+%             imagesc(prod(filter_sz(disp_layer,:)) * mean(abs(ifft2(conj(ifftshift(hf_full{disp_layer})), 'symmetric')), 3)); 
+%             colorbar;
+%             axis image;
+%             subplot(subplot_rows,subplot_cols,disp_layer+subplot_cols);
+%             imagesc(mean(abs(xl{disp_layer}), 3)./(cos_window{disp_layer}+eps)); 
+%             colorbar;
+%             axis image;
+%             if frame > 1
+%                 subplot(subplot_rows,subplot_cols,disp_layer+2*subplot_cols);
+%                 imagesc(prod(output_sz) * fftshift(ifft2(ifftshift(scores_fs_feat{disp_layer}(:,:,1,scale_ind)), 'symmetric')));
+%                 colorbar;
+%                 axis image;
 %             end
 %         end
-         %pause
-    end
+%         
+% %         figure(102);plot(sample_weights);title('Sample weights');
+%         
+%         residuals_pcg = [residuals_pcg; res_norms/norm_cdcf(rhs_samplef)];
+%         res_start_ind = max(1, length(residuals_pcg)-40*max_CG_iter);
+%         figure(99);plot(res_start_ind:length(residuals_pcg), residuals_pcg(res_start_ind:end));
+%         axis([res_start_ind, length(residuals_pcg), 0, min(max(residuals_pcg(res_start_ind:end)), 0.2)]);
+%     end
+    
+    %visualization
+%     if visualization == 1
+%         rect_position_vis = [pos([2,1]) - target_sz([2,1])/2, target_sz([2,1])];
+%         im_to_show = double(im)/255;
+%         if size(im_to_show,3) == 1
+%             im_to_show = repmat(im_to_show, [1 1 3]);
+%         end
+%         if frame == 1,  %first frame, create GUI
+%             fig_handle = figure('Name', 'Tracking');
+% %             set(fig_handle, 'Position', [100, 100, size(im,2), size(im,1)]);
+%             imagesc(im_to_show);
+%             hold on;
+%             rectangle('Position',rect_position_vis, 'EdgeColor','g', 'LineWidth',2);
+%             text(10, 10, int2str(frame), 'color', [0 1 1]);
+%             hold off;
+%             axis off;axis image;set(gca, 'Units', 'normalized', 'Position', [0 0 1 1])
+%             
+% %             output_name = 'Regularized';
+% %             opengl software;
+% %             writer = VideoWriter(output_name, 'MPEG-4');
+% %             writer.FrameRate = 5;
+% %             open(writer);
+%         else
+%             % Do visualization of the sampled confidence scores overlayed
+%             resp_sz = round(img_support_sz*currentScaleFactor*scaleFactors(scale_ind));
+%             xs = floor(old_pos(2)) + (1:resp_sz(2)) - floor(resp_sz(2)/2);
+%             ys = floor(old_pos(1)) + (1:resp_sz(1)) - floor(resp_sz(1)/2);
+%             
+%             % To visualize the continuous scores, sample them 10 times more
+%             % dense than output_sz. This is implemented an an ifft2.
+%             % First pad the fourier series with zeros.
+%             sampled_scores_display_dft = resizeDFT2(scores_fs(:,:,scale_ind), 10*output_sz, false);
+%             % Then do inverse DFT and rescale correctly
+%             sampled_scores_display = fftshift(prod(10*output_sz) * ifft2(sampled_scores_display_dft, 'symmetric'));
+%             
+%             figure(fig_handle);
+% %                 set(fig_handle, 'Position', [100, 100, 100+size(im,2), 100+size(im,1)]);
+%             imagesc(im_to_show);
+%             hold on;
+%             resp_handle = imagesc(xs, ys, sampled_scores_display); colormap hsv;
+%             alpha(resp_handle, 0.5);
+%             rectangle('Position',rect_position_vis, 'EdgeColor','g', 'LineWidth',2);
+%             text(10, 10, int2str(frame), 'color', [0 1 1]);
+%             hold off;
+%             
+% %                 axis off;axis image;set(gca, 'Units', 'normalized', 'Position', [0 0 1 1])
+%         end
+%         
+%         drawnow
+% %         if frame > 1
+% %             if frame < inf
+% %                 writeVideo(writer, getframe(gcf));
+% %             else
+% %                 close(writer);
+% %             end
+% %         end
+%          %pause
+%     end
+    
+    
 end
 
 % close(writer);
 
-fps = numel(s_frames) / time;
-
-disp(['fps: ' num2str(fps)])
+fps = seq.frame / time;
+% 
+% disp(['fps: ' num2str(fps)])
 
 results.type = 'rect';
-results.res = rect_position;%each row is a rectangle
+% results.res = rect_position;%each row is a rectangle
 results.fps = fps;
