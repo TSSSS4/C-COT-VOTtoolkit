@@ -1,8 +1,5 @@
 function results=VOT2016_settings(seq, res_path, bSaveImage, parameters)
 
-close all
-
-s_frames = seq.s_frames;
 
 % Feature specific parameters
 hog_params.cell_size = 4;
@@ -81,10 +78,8 @@ params.visualization = 0;               % Visualiza tracking and detection score
 params.debug = 0;                       % Do full debug visualization
 
 
-% Initialize
-params.wsize = [seq.init_rect(1,4), seq.init_rect(1,3)];
-params.init_pos = [seq.init_rect(1,2), seq.init_rect(1,1)] + floor(params.wsize/2);
-params.s_frames = s_frames;
+
+params.seq = seq;
 
 % Run tracker
 results = tracker(params);
